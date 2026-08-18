@@ -1,0 +1,12 @@
+mise.toml
+
+# cfg/ and secrets/: ignore everything, then allow encrypted sidecars
+# and any files named below.
+cfg/*
+secrets/*
+!cfg/*.enc.yaml
+!secrets/*.enc.yaml
+
+# named exceptions
+# !cfg/example.yaml
+# !secrets/example
