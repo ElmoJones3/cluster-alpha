@@ -6,7 +6,7 @@ export TALOSCONFIG ?= ./secrets/talosconfig
 help:
 	@printf '%s\n' \
 	  '  make encrypt         ./scripts/cipher.sh encrypt  (plaintext → *.enc.yaml)' \
-	  '  make decrypt         ./scripts/cipher.sh decrypt  (needs SOPS_AGE_KEY_FILE)' \
+	  '  make decrypt         cipher.sh decrypt (mise x -- if mise is on PATH)' \
 	  '  make reboot-all      Reboot workers, then the control plane' \
 	  '  make shutdown-all    Power off workers, then the control plane' \
 	  '' \
@@ -17,8 +17,14 @@ help:
 encrypt:
 	./scripts/cipher.sh encrypt
 
+# mise.toml holds SOPS_AGE_KEY_FILE. If mise is here, load it. If not, the
+# caller already exported whatever decrypt needs.
 decrypt:
-	./scripts/cipher.sh decrypt
+	@if command -v mise >/dev/null; then \
+	  mise x -- ./scripts/cipher.sh decrypt; \
+	else \
+	  ./scripts/cipher.sh decrypt; \
+	fi
 
 check-env:
 	@test -n "$(CONTROL_PLANE_IP)" || { echo "CONTROL_PLANE_IP is unset (load mise env)"; exit 1; }
