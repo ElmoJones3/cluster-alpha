@@ -1,8 +1,27 @@
 # alpha
 
-First [Talos Linux](https://www.siderolabs.com/linux) cluster, on mini G5 boxes.
+A [Talos Linux](https://www.siderolabs.com/linux) cluster, running on mini G5 boxes in my basement. It is a local Kubernetes environment for development, with node-local storage planned for PostgreSQL, Elasticsearch, and Neo4j.
 
-Following the [Getting Started](https://docs.siderolabs.com/talos/v1.13/getting-started/getting-started) guide for Talos v1.13. Single control plane for now; workers come later. For HA later, see [Production Notes](https://docs.siderolabs.com/talos/v1.13/getting-started/prodnotes).
+The cluster follows the [Talos v1.13 Getting Started guide](https://docs.siderolabs.com/talos/v1.13/getting-started/getting-started). It has one control plane for now. See the Talos [production notes](https://docs.siderolabs.com/talos/v1.13/getting-started/prodnotes) before adding control-plane redundancy.
+
+## Contents
+
+- [About](#about)
+- [Cluster](#cluster)
+- [Repository layout](#repository-layout)
+- [Requirements](#requirements)
+- [Getting started](#getting-started)
+- [Roadmap](#roadmap)
+- [Operations](#operations)
+- [Glossary](#glossary)
+- [License](#license)
+- [Acknowledgements](#acknowledgements)
+
+## About
+
+This repository holds the cluster configuration, encrypted credentials, worker patches, Kubernetes manifests, and the runbook used to operate the cluster. Secrets are committed only as sops-encrypted sidecars.
+
+Each worker will expose a directory on Talos `EPHEMERAL` storage for local PersistentVolumes. Rancher Local Path Provisioner will create volumes there on demand. The target of about 128 GB, roughly half of each worker's disk, is an operating budget rather than a filesystem quota.
 
 ## Cluster
 
@@ -16,43 +35,56 @@ Following the [Getting Started](https://docs.siderolabs.com/talos/v1.13/getting-
 | Kubernetes | v1.36.2 |
 | Layout | 1 control plane, 0 workers |
 
-Local env lives in `mise.toml` (gitignored). `TALOSCONFIG` points at plaintext `secrets/talosconfig`. `talosctl` reads plaintext; git only sees `*.enc.yaml`.
+## Repository layout
 
-```
-cfg/controlplane.yaml           plaintext machine config — not committed
-cfg/controlplane.enc.yaml       sops sidecar — committed
-cfg/worker.yaml                 plaintext — not committed
-cfg/worker.enc.yaml             sops sidecar — committed
-secrets/talosconfig             plaintext talosctl creds — not committed
-secrets/talosconfig.enc.yaml    sops sidecar — committed
-.sops.yaml                      age recipient (public key)
-scripts/cipher.sh               make encrypt / make decrypt
-scripts/workers.sh              apply worker.yaml + tracked patches to WORKER_IP
-patches/worker-local-pvs.yaml   non-secret worker patch for EPHEMERAL-backed local storage
-k8s/local-path/                 pinned Local Path Provisioner + smoke test
-```
+| Path | Purpose | Committed |
+| --- | --- | --- |
+| `cfg/controlplane.yaml` | Plaintext control-plane machine config | No |
+| `cfg/controlplane.enc.yaml` | Encrypted control-plane config | Yes |
+| `cfg/worker.yaml` | Plaintext worker machine config | No |
+| `cfg/worker.enc.yaml` | Encrypted worker config | Yes |
+| `secrets/talosconfig` | Plaintext `talosctl` credentials | No |
+| `secrets/talosconfig.enc.yaml` | Encrypted `talosctl` credentials | Yes |
+| `.sops.yaml` | Public age recipient | Yes |
+| `scripts/cipher.sh` | Encryption and decryption workflow | Yes |
+| `scripts/workers.sh` | Applies the worker config and tracked patches to `WORKER_IP` | Yes |
+| `patches/worker-local-pvs.yaml` | Worker label and `EPHEMERAL`-backed local-storage patch | Yes |
+| `k8s/local-path/` | Pinned Local Path Provisioner and smoke test | Yes |
+
+Local environment settings live in `mise.toml`, which is gitignored. `TALOSCONFIG` points to the plaintext `secrets/talosconfig`; `talosctl` reads that file while git sees only `*.enc.yaml`.
+
+## Requirements
+
+- `talosctl` and `kubectl` for cluster administration
+- `sops` and `age` for encrypted configuration
+- `make` for the encryption and lifecycle shortcuts
+- `mise` if you want per-machine environment variables loaded automatically
+
+## Getting started
+
+### Environment
+
+Set `TALOSCONFIG` in your shell or pass it to each command:
 
 ```bash
 export TALOSCONFIG=./secrets/talosconfig
 # or pass --talosconfig=./secrets/talosconfig on each command
 ```
 
-## Secrets (sops + age)
+`mise.toml` can export `SOPS_AGE_KEY_FILE`, `CONTROL_PLANE_IP`, `TALOSCONFIG`, and the other local values. It stays out of git so each admin machine can use its own paths.
 
-Plaintext under `cfg/` and `secrets/` is gitignored except `*.enc.yaml`. Public age key is in `.sops.yaml`. The private key is a **path on the machine** (`SOPS_AGE_KEY_FILE`), never in git.
+### Secrets
+
+Plaintext files under `cfg/` and `secrets/` are gitignored except for `*.enc.yaml`. The public age key is in `.sops.yaml`. The private key is a path on the admin machine, supplied through `SOPS_AGE_KEY_FILE`, and never belongs in git.
 
 ```bash
-make encrypt    # plaintext → *.enc.yaml (public recipient only; no private key)
-make decrypt    # inverse; needs SOPS_AGE_KEY_FILE
+make encrypt    # plaintext to *.enc.yaml; needs only the public recipient
+make decrypt    # *.enc.yaml to plaintext; needs SOPS_AGE_KEY_FILE
 ```
 
-Decrypt overwrites plaintext. No backup. Encrypt after you edit; commit the sidecars.
+Decryption overwrites the plaintext files without making a backup. Encrypt after editing, then commit the sidecars.
 
-### Optional mise
-
-`mise.toml` can export `SOPS_AGE_KEY_FILE`, `CONTROL_PLANE_IP`, `TALOSCONFIG`, etc. It is gitignored so each box has its own path.
-
-`make decrypt` uses `mise x --` when `mise` is on PATH, so Make picks up that file. If mise is missing, the script runs as-is — export `SOPS_AGE_KEY_FILE` yourself first.
+`make decrypt` runs through `mise x --` when `mise` is available, which loads the local environment. Without `mise`, export the key path yourself:
 
 ```bash
 # with mise in this directory
@@ -63,63 +95,61 @@ export SOPS_AGE_KEY_FILE=/path/to/age/keys.txt
 make decrypt
 ```
 
-Encrypt does not need the private key. A box with only this clone and no age identity cannot decrypt the Talos credentials; independently issued Talos or Kubernetes credentials are a separate access path.
+Encryption does not need the private key. A machine with only this clone and no matching age identity cannot decrypt the Talos credentials. Independently issued Talos or Kubernetes credentials are a separate access path.
 
-Add a second machine as a recipient: put its public key in `.sops.yaml`, then `sops updatekeys` on the sidecars (or `make encrypt` from plaintext). Same private key copied to a second path also works; do not commit it.
+To add another age identity, add its public key to `.sops.yaml`, then run `sops updatekeys` on the sidecars or `make encrypt` from plaintext. Copying the existing private key to a second machine also works, but do not commit it. Full workflow notes are in `scripts/cipher.sh`.
 
-Full workflow notes live in `scripts/cipher.sh`.
+### Current build status
 
-## Setup
-
-Status against the [getting started](https://docs.siderolabs.com/talos/v1.13/getting-started/getting-started) steps. Workers skipped: no other boxes yet.
+Workers have not been provisioned because the other boxes are not in the cluster yet.
 
 | Step | Status | Notes |
 | --- | --- | --- |
 | 1. Download the Talos Linux image | **done** | ISO from the [Image Factory](https://factory.talos.dev/) |
-| 2. Boot your machine | **done** | Control plane only. Workers still pending. |
+| 2. Boot your machine | **done** | Control plane only. Workers are still pending. |
 | 3. Store node IPs | **done** | `CONTROL_PLANE_IP=10.0.0.239` in `mise.toml`. No `WORKER_IP` yet. |
-| 4. Unmount the ISO | **done** | So the machine boots from the installed NVMe after apply/reboot. |
-| 5. Learn about installation disks | **done** | `talosctl get disks --insecure --nodes $CONTROL_PLANE_IP` → `nvme0n1` |
-| 6. Generate cluster configuration | **done** | `cfg/controlplane.yaml`, `cfg/worker.yaml`, `secrets/talosconfig` |
+| 4. Unmount the ISO | **done** | The machine must boot from the installed NVMe after apply and reboot. |
+| 5. Learn about installation disks | **done** | `talosctl get disks --insecure --nodes $CONTROL_PLANE_IP` returned `nvme0n1`. |
+| 6. Generate cluster configuration | **done** | Created `cfg/controlplane.yaml`, `cfg/worker.yaml`, and `secrets/talosconfig`. |
 | 7. Apply configurations | **done** | Control plane applied. Workers not applied. |
-| 8. Set endpoints | **done** | `talosctl --talosconfig=./secrets/talosconfig config endpoints $CONTROL_PLANE_IP` |
-| 9. Bootstrap etcd | **done** | Ran **once** on the single control plane. |
-| 10. Get Kubernetes access | **pending** | `talosctl kubeconfig` |
-| 11. Check cluster health | **pending** | `talosctl health` |
-| 12. Verify node registration | **pending** | `kubectl get nodes` |
+| 8. Set endpoints | **done** | Ran `talosctl --talosconfig=./secrets/talosconfig config endpoints $CONTROL_PLANE_IP`. |
+| 9. Bootstrap etcd | **done** | Ran once on the single control plane. |
+| 10. Get Kubernetes access | **pending** | Run `talosctl kubeconfig`. |
+| 11. Check cluster health | **pending** | Run `talosctl health`. |
+| 12. Verify node registration | **pending** | Run `kubectl get nodes`. |
 
-### Step 6 (done)
+The cluster configuration was generated with:
 
 ```bash
 talosctl gen config $CLUSTER_NAME https://$CONTROL_PLANE_IP:6443 --install-disk /dev/$DISK_NAME
 ```
 
-### Step 7 (done for the control plane)
+The control-plane configuration was applied with:
 
 ```bash
 talosctl apply-config --insecure --nodes $CONTROL_PLANE_IP --file cfg/controlplane.yaml
 ```
 
-`--insecure` is only for **maintenance mode** (node has no machine config yet). After this apply, Talos installs to disk and reboots. The maintenance API is then gone; later commands use `talosconfig`.
+`--insecure` is only for maintenance mode, before a node has a machine configuration. Applying the configuration installs Talos to disk and reboots the node. Later commands use `talosconfig` because the unauthenticated maintenance API is gone.
 
-Workers, when the other G5s exist:
+Workers will use the shared script when the remaining G5s are ready:
 
 ```bash
 WORKER_IP="10.0.0.x 10.0.0.y"
 ./scripts/workers.sh
 ```
 
-### Step 9 (done)
+etcd was bootstrapped with:
 
 ```bash
 talosctl bootstrap --nodes $CONTROL_PLANE_IP --talosconfig=./secrets/talosconfig
 ```
 
-Ran **once** on the single control plane. Do not run it again on this cluster.
+That command runs once per cluster. Do not run it again on `alpha`.
 
-### Next: steps 10–12 (still pending)
+### Finish the control-plane setup
 
-Cluster was last shut down from this laptop. Power the control plane on first.
+The cluster was last shut down from this laptop. Power on the control plane first, then finish steps 10 through 12:
 
 ```bash
 talosctl kubeconfig --nodes $CONTROL_PLANE_IP --talosconfig=./secrets/talosconfig
@@ -130,28 +160,25 @@ talosctl --nodes $CONTROL_PLANE_IP --talosconfig=./secrets/talosconfig health
 kubectl get nodes
 ```
 
-## Next steps
+## Roadmap
 
-### a) Prepare and provision the next 5 workers
+### 1. Provision five workers
 
-Each worker will use a directory on its existing Talos `EPHEMERAL` (`/var`) filesystem as the root for node-local PVCs. This does **not** repartition the NVMe, and `EPHEMERAL` must not be capped for this design.
+Each worker will use a directory on its existing Talos `EPHEMERAL` filesystem (`/var`) as the root for node-local PVCs. This design does not repartition the NVMe, and `EPHEMERAL` must remain uncapped.
 
-The tracked [`patches/worker-local-pvs.yaml`](patches/worker-local-pvs.yaml) does two things:
+[`patches/worker-local-pvs.yaml`](patches/worker-local-pvs.yaml) labels the Kubernetes node `local-pv=true` and creates the directory-backed Talos user volume `local-pvs` at `/var/mnt/local-pvs`.
 
-- labels the Kubernetes node `local-pv=true`, so storage and workloads can select eligible workers;
-- creates the directory-backed Talos user volume `local-pvs`, mounted at `/var/mnt/local-pvs`.
+`volumeType: directory` has no `provisioning` block. Fields such as `diskSelector`, `minSize`, `maxSize`, filesystem configuration, and encryption are invalid for this volume type. The directory inherits the capacity of `EPHEMERAL`, so the planned 128 GB per worker is a soft usage budget rather than a partition or quota.
 
-`volumeType: directory` has no `provisioning` block: `diskSelector`, `minSize`, `maxSize`, filesystem configuration, and encryption are invalid for this type. The directory inherits `EPHEMERAL` capacity. The intended ~128 GB per worker is therefore a **soft usage budget**, not a partition or quota.
+[`scripts/workers.sh`](scripts/workers.sh) applies the generated worker config and the tracked patch together. Run `make decrypt` first on a fresh clone so `cfg/worker.yaml` exists.
 
-[`scripts/workers.sh`](scripts/workers.sh) applies the generated worker config and this tracked patch together. On a new clone, run `make decrypt` first so `cfg/worker.yaml` exists.
-
-- [ ] Boot each G5 from the same Talos ISO; note its maintenance-mode IP.
-- [ ] Confirm the install disk on every box: `talosctl get disks --insecure --nodes <worker-ip>`.
-- [ ] If a box differs from `/dev/nvme0n1`, give it a node-specific config/patch instead of applying the shared config blindly.
+- [ ] Boot each G5 from the same Talos ISO and note its maintenance-mode IP.
+- [ ] Check the install disk on every box with `talosctl get disks --insecure --nodes <worker-ip>`.
+- [ ] If a box does not use `/dev/nvme0n1`, give it a node-specific config or patch instead of applying the shared config.
 - [ ] Set space-separated `WORKER_IP` values in `mise.toml` or the environment.
 - [ ] Run `./scripts/workers.sh`.
-- [ ] Remove the ISO before the first reboot so the box boots from the installed NVMe.
-- [ ] Wait until every worker is `Ready`, then verify the Talos mount and Kubernetes label.
+- [ ] Remove the ISO before the first reboot so the box starts from the installed NVMe.
+- [ ] Wait for every worker to become `Ready`, then check the Talos mount and Kubernetes label.
 
 ```bash
 WORKER_IP="10.0.0.240 10.0.0.241 10.0.0.242"
@@ -166,23 +193,17 @@ talosctl --nodes <worker-ip> list /var/mnt/local-pvs
 kubectl get node <worker-name> -o jsonpath='{.metadata.labels.local-pv}{"\n"}'
 ```
 
-Do not re-run `talosctl bootstrap`. Workers join Kubernetes through their machine configuration; they do not join the etcd cluster.
+Do not run `talosctl bootstrap` again. Workers join Kubernetes through their machine configuration; they do not join etcd.
 
-Docs: [Getting Started](https://docs.siderolabs.com/talos/v1.13/getting-started/getting-started), [Talos architecture and `EPHEMERAL`](https://docs.siderolabs.com/talos/v1.13/learn-more/architecture), [directory-backed user volumes](https://docs.siderolabs.com/talos/v1.13/configure-your-talos-cluster/storage-and-disk-management/disk-management/user), and [configuration patches](https://docs.siderolabs.com/talos/v1.13/configure-your-talos-cluster/system-configuration/patching).
+References: [Getting Started](https://docs.siderolabs.com/talos/v1.13/getting-started/getting-started), [Talos architecture and `EPHEMERAL`](https://docs.siderolabs.com/talos/v1.13/learn-more/architecture), [directory-backed user volumes](https://docs.siderolabs.com/talos/v1.13/configure-your-talos-cluster/storage-and-disk-management/disk-management/user), and [configuration patches](https://docs.siderolabs.com/talos/v1.13/configure-your-talos-cluster/system-configuration/patching).
 
-### b) Install dynamic provisioning for local PVCs
+### 2. Install local PVC provisioning
 
-[Rancher Local Path Provisioner](https://github.com/rancher/local-path-provisioner) is an external dynamic provisioner that creates `hostPath`/`local` PV directories. It is not a CSI driver. The manifest in [`k8s/local-path/kustomization.yaml`](k8s/local-path/kustomization.yaml):
+[Rancher Local Path Provisioner](https://github.com/rancher/local-path-provisioner) is an external dynamic provisioner that creates `hostPath` or `local` PV directories. It is not a CSI driver.
 
-- pins upstream `v0.0.36` instead of tracking `master`;
-- changes the upstream root from `/opt/local-path-provisioner` to `/var/mnt/local-pvs`;
-- permits its helper Pods in the `local-path-storage` namespace;
-- keeps `volumeBindingMode: WaitForFirstConsumer`;
-- restricts provisioning to nodes labeled `local-pv=true`;
-- uses `reclaimPolicy: Retain`, so deleting a PVC does not automatically erase database data;
-- leaves `local-path` non-default, so workloads must request it explicitly.
+[`k8s/local-path/kustomization.yaml`](k8s/local-path/kustomization.yaml) pins upstream `v0.0.36` instead of tracking `master`, changes the default root from `/opt/local-path-provisioner` to `/var/mnt/local-pvs`, permits helper Pods in the `local-path-storage` namespace, and restricts provisioning to nodes labeled `local-pv=true`. The `local-path` StorageClass uses `WaitForFirstConsumer` and `Retain`. Deleting a PVC therefore does not automatically erase its database data. The class is not the default, so workloads must request it by name.
 
-Install only after the workers are `Ready`:
+Install the provisioner after the workers are `Ready`:
 
 ```bash
 kubectl apply -k k8s/local-path
@@ -190,7 +211,7 @@ kubectl --namespace local-path-storage rollout status deployment/local-path-prov
 kubectl get storageclass local-path
 ```
 
-Smoke-test provisioning and the mount:
+Run the smoke test to check provisioning and the mount:
 
 ```bash
 kubectl apply -f k8s/local-path/smoke-test.yaml
@@ -199,7 +220,7 @@ kubectl exec local-path-smoke -- cat /data/result
 kubectl get pvc,pv -o wide
 ```
 
-The expected file is `local-path-ok`. Because the StorageClass retains data, switch only this test PV to `Delete` before cleanup:
+The file should contain `local-path-ok`. The StorageClass retains data, so change only the test PV to `Delete` before cleanup:
 
 ```bash
 SMOKE_PV=$(kubectl get pvc local-path-smoke -o jsonpath='{.spec.volumeName}')
@@ -207,7 +228,7 @@ kubectl patch pv "$SMOKE_PV" --type merge -p '{"spec":{"persistentVolumeReclaimP
 kubectl delete -f k8s/local-path/smoke-test.yaml
 ```
 
-The PVC's requested size is Kubernetes metadata, not an enforced directory limit: Local Path Provisioner currently ignores capacity limits. Because this `hostPath` data shares `EPHEMERAL` with images, logs, kubelet, and containerd, monitor usage and node `DiskPressure` explicitly:
+The requested PVC size is Kubernetes metadata, not an enforced directory limit. Local Path Provisioner currently ignores capacity limits. This `hostPath` data shares `EPHEMERAL` with images, logs, kubelet, and containerd, so monitor disk use and node `DiskPressure`:
 
 ```bash
 talosctl --nodes <worker-ip> usage /var/mnt/local-pvs --humanize --depth 2
@@ -215,11 +236,11 @@ kubectl get pvc,pv -A
 kubectl describe node <worker-name>
 ```
 
-Docs: [Talos local-storage guide](https://docs.siderolabs.com/kubernetes-guides/csi/local-storage), [StorageClass binding and reclaim policies](https://kubernetes.io/docs/concepts/storage/storage-classes/), [`hostPath` accounting and disk pressure](https://kubernetes.io/docs/concepts/storage/volumes/#hostpath), and [node-pressure eviction](https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/).
+References: [Talos local storage](https://docs.siderolabs.com/kubernetes-guides/csi/local-storage), [StorageClass binding and reclaim policies](https://kubernetes.io/docs/concepts/storage/storage-classes/), [`hostPath` accounting and disk pressure](https://kubernetes.io/docs/concepts/storage/volumes/#hostpath), and [node-pressure eviction](https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/).
 
-### c) Place PostgreSQL, Elasticsearch, and Neo4j
+### 3. Place the stateful workloads
 
-`WaitForFirstConsumer` waits for Kubernetes to choose a node before creating the PV, but it does not guarantee that these three databases land on different workers. Assign the intended roles after the workers join:
+`WaitForFirstConsumer` delays PV creation until Kubernetes chooses a node. It does not put PostgreSQL, Elasticsearch, and Neo4j on different workers by itself. Label the chosen workers after they join:
 
 ```bash
 kubectl label node <postgres-worker> storage-role=postgres
@@ -227,7 +248,7 @@ kubectl label node <elastic-worker> storage-role=elastic
 kubectl label node <neo4j-worker> storage-role=neo4j
 ```
 
-For each Helm chart or StatefulSet, ensure the resulting Pod template and PVC contain the equivalent of:
+Each Helm chart or StatefulSet needs the matching node selector and an explicit `storageClassName`:
 
 ```yaml
 # PostgreSQL example; use elastic or neo4j on the other workloads.
@@ -238,35 +259,35 @@ nodeSelector:
 storageClassName: local-path
 ```
 
-Use `nodeSelector` or node affinity, not `spec.nodeName`: bypassing the scheduler can leave a `WaitForFirstConsumer` claim pending. Verify placement and binding after each deployment:
+Use `nodeSelector` or node affinity instead of `spec.nodeName`. Setting `spec.nodeName` bypasses the scheduler and can leave a `WaitForFirstConsumer` claim pending. Check placement and binding after each deployment:
 
 ```bash
 kubectl get pods -A -o wide
 kubectl get pvc,pv -A -o wide
 ```
 
-These volumes survive Pod replacement and node reboot, but remain bound to the worker where their directories live. If that worker is powered off or fails, its database Pod cannot mount the volume on another worker and will remain unavailable until the original node/data returns. This is persistence, not replication or HA; keep backups for anything that stops being disposable dev data.
+These volumes survive Pod replacement and node reboot, but each one remains tied to the worker that holds its directory. If that worker is off or fails, the database Pod cannot mount the volume elsewhere. It remains unavailable until the original node and its data return. This provides persistence, not replication or high availability. Back up any data that stops being disposable.
 
-Docs: [assigning Pods to nodes](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/), [local-volume scheduling](https://kubernetes.io/docs/concepts/storage/storage-classes/#volume-binding-mode), and [StatefulSet storage](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#stable-storage).
+References: [assigning Pods to nodes](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/), [local-volume scheduling](https://kubernetes.io/docs/concepts/storage/storage-classes/#volume-binding-mode), and [StatefulSet storage](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#stable-storage).
 
-### d) Second box works with the proper keys
+### 4. Configure a second admin machine
 
-Laptop/workstation #2, not a Talos node.
+These steps apply to a second laptop or workstation, not a Talos node.
 
-- [ ] Install `talosctl`, `sops`, optionally `mise`.
-- [ ] Age **private** key on that box at whatever path you set (`SOPS_AGE_KEY_FILE`). Same key as this machine, or a new key listed as a recipient in `.sops.yaml`.
-- [ ] Clone the repo. Working tree has sidecars only.
-- [ ] `mise.toml` locally (gitignored) or `export SOPS_AGE_KEY_FILE=…`
-- [ ] `make decrypt` — must produce plaintext without “SOPS_AGE_KEY_FILE is unset”.
-- [ ] Control plane powered on: `talosctl --nodes $CONTROL_PLANE_IP --talosconfig=./secrets/talosconfig version`
-- [ ] `talosctl --nodes $CONTROL_PLANE_IP get nodename` (or `health` once kubeconfig exists)
-- [ ] Confirm `git status` does not list `cfg/controlplane.yaml`, `cfg/worker.yaml`, or `secrets/talosconfig`.
+- [ ] Install `talosctl` and `sops`; install `mise` if wanted.
+- [ ] Put an age private key on the machine and set its path in `SOPS_AGE_KEY_FILE`. Use the existing key or add the new key's public recipient to `.sops.yaml`.
+- [ ] Clone the repository. The working tree should contain encrypted sidecars only.
+- [ ] Create a local, gitignored `mise.toml` or export `SOPS_AGE_KEY_FILE`.
+- [ ] Run `make decrypt` and confirm that it produces plaintext without a `SOPS_AGE_KEY_FILE is unset` error.
+- [ ] With the control plane on, run `talosctl --nodes $CONTROL_PLANE_IP --talosconfig=./secrets/talosconfig version`.
+- [ ] Run `talosctl --nodes $CONTROL_PLANE_IP get nodename`, or `health` after kubeconfig exists.
+- [ ] Confirm that `git status` does not list `cfg/controlplane.yaml`, `cfg/worker.yaml`, or `secrets/talosconfig`.
 
-If decrypt works but `talosctl` fails, the key decrypted sops and the cluster is the separate problem (node off, wrong `CONTROL_PLANE_IP`, stale endpoints in `talosconfig`). If decrypt fails, the age identity does not match `.sops.yaml`.
+If decryption works but `talosctl` fails, sops has the right key and the problem is cluster access: the node may be off, `CONTROL_PLANE_IP` may be wrong, or `talosconfig` may contain stale endpoints. If decryption fails, the age identity does not match `.sops.yaml`.
 
-## Cheatsheet
+## Operations
 
-Most commands need `--nodes` / `-n`. **Endpoints** are how `talosctl` reaches the cluster (control planes). **Nodes** are the machines the call is *about*. After bootstrap, omit `--insecure`.
+Most `talosctl` commands need `--nodes` or `-n`. An endpoint is the control-plane address that `talosctl` contacts. A node is the machine the request concerns. Do not use `--insecure` after bootstrap.
 
 ```bash
 # --- identity ---
@@ -312,7 +333,7 @@ kubectl get nodes
 kubectl get pods -A
 
 # --- secrets ---
-make encrypt                    # plaintext → *.enc.yaml
+make encrypt                    # plaintext to *.enc.yaml
 make decrypt                    # needs SOPS_AGE_KEY_FILE (mise x -- if mise exists)
 
 # --- lifecycle (destructive ones last) ---
@@ -326,40 +347,48 @@ talosctl upgrade --nodes $CONTROL_PLANE_IP --image ghcr.io/siderolabs/installer:
 # talosctl reset --nodes $CONTROL_PLANE_IP --reboot
 ```
 
-Full command list: [talosctl CLI reference](https://docs.siderolabs.com/talos/v1.13/reference/cli). Linux-admin mapping: [Talos for Linux admins](https://docs.siderolabs.com/talos/v1.13/learn-more/talos-for-linux-admins).
+See the [talosctl CLI reference](https://docs.siderolabs.com/talos/v1.13/reference/cli) for the full command list and [Talos for Linux admins](https://docs.siderolabs.com/talos/v1.13/learn-more/talos-for-linux-admins) for familiar Linux equivalents.
 
 ## Glossary
 
-**Talos Linux** — A minimal, immutable OS from [Sidero Labs](https://www.siderolabs.com/) built only to run Kubernetes. No SSH, no shell, no package manager. You manage nodes through an API.
+**Talos Linux:** A minimal, immutable OS from [Sidero Labs](https://www.siderolabs.com/) built only to run Kubernetes. It has no SSH, shell, or package manager. Nodes are managed through an API.
 
-**Sidero Labs** — The company behind Talos and Omni.
+**Sidero Labs:** The company behind Talos and Omni.
 
-**talosctl** — CLI for the Talos API. This is SSH + systemctl + journalctl for a machine that has none of those.
+**talosctl:** The Talos API command-line client. It covers the jobs normally handled through SSH, `systemctl`, and `journalctl` on a conventional Linux machine.
 
-**Maintenance mode** — A node that has booted the ISO (RAM only) but has no machine config yet. The API is unauthenticated; `apply-config --insecure` is how you claim it. Anyone on the network can do that until a config is applied. The ISO does not write disks until then.
+**Maintenance mode:** A node that has booted the ISO in memory but has no machine configuration. Its API is unauthenticated, and `apply-config --insecure` claims it. Anyone on the network can do that until a configuration is applied. The ISO does not write to disk before then.
 
-**Machine config** — Declarative YAML applied to a node (`cfg/controlplane.yaml` / `cfg/worker.yaml`). It is the OS install + cluster join + Kubernetes role in one document.
+**Machine config:** Declarative YAML applied to a node (`cfg/controlplane.yaml` or `cfg/worker.yaml`). One document defines the OS installation, cluster membership, and Kubernetes role.
 
-**Control plane** — Node that runs etcd and the Kubernetes control plane (API server, scheduler, controller-manager). Needs to be reachable on **6443** (Kubernetes) and **50000** (Talos API). This cluster has one for now. Talos normally keeps ordinary workloads off control-plane nodes with a taint unless `cluster.allowSchedulingOnControlPlanes` is enabled; verify the live taints with `kubectl describe node`.
+**Control plane:** A node running etcd and the Kubernetes control-plane components: the API server, scheduler, and controller manager. Ports 6443 for Kubernetes and 50000 for the Talos API must be reachable. This cluster has one control plane. Talos normally taints control-plane nodes to keep ordinary workloads off them unless `cluster.allowSchedulingOnControlPlanes` is enabled. Check the live taints with `kubectl describe node`.
 
-**Worker** — Node that runs workloads (kubelet + container runtime). Does not run etcd. Same Talos OS, different `machine.type`. A control-plane node can also run workloads only when its scheduling configuration and taints permit it.
+**Worker:** A node that runs workloads through kubelet and the container runtime. It does not run etcd. It uses the same Talos OS with a different `machine.type`. A control-plane node can run workloads only when its scheduling configuration and taints allow it.
 
-**etcd** — Distributed key-value store Kubernetes uses as its source of truth (cluster state, object specs). `talosctl bootstrap` initializes it on the first control plane. Without a successful bootstrap, there is no Kubernetes API.
+**etcd:** The distributed key-value store Kubernetes uses for cluster state and object specifications. `talosctl bootstrap` initializes it on the first control plane. Kubernetes has no working API until bootstrap succeeds.
 
-**Bootstrap** — One-shot: start etcd on a single control plane after machine config is applied and the node is up. Other control planes (when you have them) join that etcd cluster; they are not bootstrapped separately.
+**Bootstrap:** The one-time command that starts etcd on one control plane after its machine configuration is applied. Additional control planes join that etcd cluster and are not bootstrapped separately.
 
-**Endpoint vs node** — An **endpoint** is who `talosctl` talks to (usually control planes). A **node** (`-n`) is who the request is for. Endpoints proxy to other members, so you do not retarget the endpoint just to inspect a worker.
+**Endpoint and node:** An endpoint is the address `talosctl` contacts, usually a control plane. A node, passed with `-n`, is the machine the request concerns. Endpoints proxy requests to other members, so inspecting a worker does not require changing the endpoint.
 
-**talosconfig** — Client certs and endpoints for the Talos API (`./secrets/talosconfig` here, or `~/.talos/config`). This is OS/cluster admin access, not `kubectl`. Git holds `secrets/talosconfig.enc.yaml`.
+**talosconfig:** Client certificates and endpoints for the Talos API, stored here as `./secrets/talosconfig` or normally as `~/.talos/config`. It grants OS and cluster administration through the Talos API, not `kubectl` access. Git holds `secrets/talosconfig.enc.yaml`.
 
-**sops / age** — Key-level encryption for YAML sidecars. Keys stay readable; values are `ENC[…]`. Age public key in `.sops.yaml`; private key only as `SOPS_AGE_KEY_FILE` on the machine.
+**sops and age:** sops provides key-level YAML encryption and age supplies the recipient identity. YAML keys stay readable while values become `ENC[...]`. `.sops.yaml` contains the age public key; the private key stays on the admin machine at `SOPS_AGE_KEY_FILE`.
 
-**User volume** — Talos-managed local storage mounted at `/var/mnt/<name>`. Depending on `volumeType`, it can be a partition, a whole disk, or a directory backed by `EPHEMERAL`. It is not a Kubernetes `PersistentVolume` until a Pod uses it directly with `hostPath` or a provisioner creates PVs beneath it.
+**User volume:** Talos-managed local storage mounted at `/var/mnt/<name>`. Depending on `volumeType`, it may be a partition, a whole disk, or a directory backed by `EPHEMERAL`. It is not a Kubernetes PersistentVolume until a Pod mounts it directly through `hostPath` or a provisioner creates PVs beneath it.
 
-**kubeconfig** — Client creds for the Kubernetes API. Fetched with `talosctl kubeconfig` after bootstrap. Different file, different API (6443 vs 50000).
+**kubeconfig:** Credentials for the Kubernetes API, fetched with `talosctl kubeconfig` after bootstrap. This is a different file and API from `talosconfig`: Kubernetes uses port 6443, while Talos uses port 50000.
 
-**Image Factory** — [factory.talos.dev](https://factory.talos.dev/): builds Talos ISOs/installers, including hardware-specific **system extensions** (NIC drivers, etc.) if a G5 box needs them.
+**Image Factory:** [factory.talos.dev](https://factory.talos.dev/) builds Talos ISOs and installers. It can include hardware-specific system extensions, such as NIC drivers, if a G5 needs them.
 
-**Omni** — Sidero’s hosted/self-hosted control plane for managing Talos machines across sites. Not used here; this is a DIY `talosctl` cluster.
+**Omni:** Sidero's hosted or self-hosted control plane for managing Talos machines across sites. This cluster uses `talosctl` directly instead.
 
-**KubePrism** — On-node proxy so kubelets can always find the Kubernetes API locally even if the external endpoint is awkward. More relevant once there are multiple control planes.
+**KubePrism:** An on-node proxy that lets kubelets reach the Kubernetes API locally when the external endpoint is unavailable or inconvenient. It becomes more useful with multiple control planes.
+
+## License
+
+Licensed under the [MIT License](LICENSE).
+
+## Acknowledgements
+
+The README structure is adapted from [Awesome Readme Template](https://github.com/Louis3797/awesome-readme-template). Cluster procedures and reference material come from the linked Talos and Kubernetes documentation.
