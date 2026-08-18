@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: local-path-smoke
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: local-path-smoke
+spec:
+  nodeSelector:
+    local-pv: "true"
+  containers:
+    - name: smoke
+      image: docker.io/library/busybox:1.37.0
+      command:
+        - /bin/sh
+        - -c
+        - echo local-path-ok > /data/result && exec sleep 86400
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: local-path-smoke

@@ -1,0 +1,12 @@
+# All workers can host node-local PVCs. The label lets the StorageClass and
+# workloads exclude control-plane or other nodes that do not have this path.
+machine:
+  nodeLabels:
+    local-pv: "true"
+---
+# A directory-backed user volume lives on the existing EPHEMERAL (/var)
+# filesystem. It does not create a partition or enforce a capacity quota.
+apiVersion: v1alpha1
+kind: UserVolumeConfig
+name: local-pvs
+volumeType: directory

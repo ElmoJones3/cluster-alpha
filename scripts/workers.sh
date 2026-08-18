@@ -13,5 +13,9 @@ read -r -a workers <<< "${WORKER_IP[*]}"
 
 for ip in "${workers[@]}"; do
   echo "Applying config to worker node: $ip"
-  talosctl apply-config --insecure --nodes "$ip" --file "$root/cfg/worker.yaml"
+  talosctl apply-config \
+    --insecure \
+    --nodes "$ip" \
+    --file "$root/cfg/worker.yaml" \
+    --config-patch "@$root/patches/worker-local-pvs.yaml"
 done
