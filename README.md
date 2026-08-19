@@ -78,11 +78,17 @@ export TALOSCONFIG=./secrets/talosconfig
 Plaintext files under `cfg/` and `secrets/` are gitignored except for `*.enc.yaml`. The public age key is in `.sops.yaml`. The private key is a path on the admin machine, supplied through `SOPS_AGE_KEY_FILE`, and never belongs in git.
 
 ```bash
-make encrypt    # plaintext to *.enc.yaml; needs only the public recipient
-make decrypt    # *.enc.yaml to plaintext; needs SOPS_AGE_KEY_FILE
+make encrypt          # update *.enc.yaml from local plaintext
+make encrypt-dry-run  # preview ciphertext changes
+make decrypt          # create missing plaintext; keep existing files
+make decrypt-dry-run  # preview creation and conflicts
 ```
 
-Decryption overwrites the plaintext files without making a backup. Encrypt after editing, then commit the sidecars.
+Local plaintext is canonical. Decryption creates a file when it is missing and leaves an existing file alone. If the existing plaintext matches the sidecar, the command reports it as unchanged. If it differs, the command reports the conflict and keeps the local file.
+
+Use `./scripts/cipher.sh decrypt --force [path...]` only when you intend to restore plaintext from committed ciphertext. Add `--dry-run` first to see which files it would replace.
+
+The script stages every result before it changes a managed file. Fresh plaintext files use mode `0600`. Paths passed on the command line must come from the managed list in `scripts/cipher.sh`.
 
 `make decrypt` runs through `mise x --` when `mise` is available, which loads the local environment. Without `mise`, export the key path yourself:
 
@@ -95,7 +101,7 @@ export SOPS_AGE_KEY_FILE=/path/to/age/keys.txt
 make decrypt
 ```
 
-Encryption does not need the private key. A machine with only this clone and no matching age identity cannot decrypt the Talos credentials. Independently issued Talos or Kubernetes credentials are a separate access path.
+Encryption does not need the private key. When the key is available, the script decrypts both versions and skips ciphertext rewrites when the plaintext has not changed. Without the key, sops ciphertext cannot be compared because encryption is randomized, so encrypt writes a new sidecar. A machine with only this clone and no matching age identity cannot decrypt the Talos credentials. Independently issued Talos or Kubernetes credentials are a separate access path.
 
 To add another age identity, add its public key to `.sops.yaml`, then run `sops updatekeys` on the sidecars or `make encrypt` from plaintext. Copying the existing private key to a second machine also works, but do not commit it. Full workflow notes are in `scripts/cipher.sh`.
 
@@ -333,8 +339,10 @@ kubectl get nodes
 kubectl get pods -A
 
 # --- secrets ---
-make encrypt                    # plaintext to *.enc.yaml
-make decrypt                    # needs SOPS_AGE_KEY_FILE (mise x -- if mise exists)
+make encrypt-dry-run            # preview sidecar changes
+make encrypt                    # update sidecars from canonical plaintext
+make decrypt-dry-run            # preview creates and conflicts
+make decrypt                    # create missing plaintext; keep local files
 
 # --- lifecycle (destructive ones last) ---
 make reboot-all                 # workers first, then control plane
