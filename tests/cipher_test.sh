@@ -81,133 +81,133 @@ recipient="$(age-keygen -y "$fixture/home/key.txt")"
 
 cat >"$fixture/.sops.yaml" <<EOF
 creation_rules:
-  - path_regex: ^(cfg|secrets)/
+  - path_regex: .*\.secret\.yaml$
     age: $recipient
 EOF
 
-cat >"$fixture/cfg/controlplane.yaml" <<'EOF'
+cat >"$fixture/cfg/controlplane.secret.yaml" <<'EOF'
 machine:
   token: control-plane-token
 EOF
 
-cat >"$fixture/cfg/worker.yaml" <<'EOF'
+cat >"$fixture/cfg/worker.secret.yaml" <<'EOF'
 machine:
   token: worker-token
 EOF
 
-cat >"$fixture/secrets/talosconfig" <<'EOF'
+cat >"$fixture/secrets/talosconfig.secret.yaml" <<'EOF'
 context: alpha
 endpoints:
   - 10.0.0.10
 EOF
 
-control_plain_hash="$(file_hash "$fixture/cfg/controlplane.yaml")"
-if run_cipher decrypt cfg/controlplane.yaml >/dev/null 2>&1; then
+control_plain_hash="$(file_hash "$fixture/cfg/controlplane.secret.yaml")"
+if run_cipher decrypt cfg/controlplane.secret.yaml >/dev/null 2>&1; then
   fail "decrypt accepted missing ciphertext"
 fi
-[[ "$(file_hash "$fixture/cfg/controlplane.yaml")" == "$control_plain_hash" ]] || \
+[[ "$(file_hash "$fixture/cfg/controlplane.secret.yaml")" == "$control_plain_hash" ]] || \
   fail "failed decrypt changed plaintext"
 
 if "$fixture/scripts/cipher.sh" >/dev/null 2>&1; then
   fail "missing mode was accepted"
 fi
 
-cat >"$fixture/cfg/extra.yaml" <<'EOF'
+cat >"$fixture/cfg/extra.secret.yaml" <<'EOF'
 secret: stray
 EOF
-if run_cipher encrypt cfg/extra.yaml >/dev/null 2>&1; then
+if run_cipher encrypt cfg/extra.secret.yaml >/dev/null 2>&1; then
   fail "unmanaged target was accepted"
 fi
-assert_no_file "$fixture/cfg/extra.enc.yaml"
+assert_no_file "$fixture/cfg/extra.secret.sops.yaml"
 
 run_cipher_without_key encrypt >/dev/null
 for encrypted in \
-  "$fixture/cfg/controlplane.enc.yaml" \
-  "$fixture/cfg/worker.enc.yaml" \
-  "$fixture/secrets/talosconfig.enc.yaml"; do
+  "$fixture/cfg/controlplane.secret.sops.yaml" \
+  "$fixture/cfg/worker.secret.sops.yaml" \
+  "$fixture/secrets/talosconfig.secret.sops.yaml"; do
   assert_file "$encrypted"
   [[ "$(file_mode "$encrypted")" == 644 ]] || fail "wrong ciphertext mode for $encrypted"
 done
 
-control_cipher_hash="$(file_hash "$fixture/cfg/controlplane.enc.yaml")"
-worker_cipher_hash="$(file_hash "$fixture/cfg/worker.enc.yaml")"
-talos_cipher_hash="$(file_hash "$fixture/secrets/talosconfig.enc.yaml")"
+control_cipher_hash="$(file_hash "$fixture/cfg/controlplane.secret.sops.yaml")"
+worker_cipher_hash="$(file_hash "$fixture/cfg/worker.secret.sops.yaml")"
+talos_cipher_hash="$(file_hash "$fixture/secrets/talosconfig.secret.sops.yaml")"
 run_cipher encrypt >/dev/null
-[[ "$(file_hash "$fixture/cfg/controlplane.enc.yaml")" == "$control_cipher_hash" ]] || \
+[[ "$(file_hash "$fixture/cfg/controlplane.secret.sops.yaml")" == "$control_cipher_hash" ]] || \
   fail "unchanged control-plane ciphertext was rewritten"
-[[ "$(file_hash "$fixture/cfg/worker.enc.yaml")" == "$worker_cipher_hash" ]] || \
+[[ "$(file_hash "$fixture/cfg/worker.secret.sops.yaml")" == "$worker_cipher_hash" ]] || \
   fail "unchanged worker ciphertext was rewritten"
-[[ "$(file_hash "$fixture/secrets/talosconfig.enc.yaml")" == "$talos_cipher_hash" ]] || \
+[[ "$(file_hash "$fixture/secrets/talosconfig.secret.sops.yaml")" == "$talos_cipher_hash" ]] || \
   fail "unchanged talosconfig ciphertext was rewritten"
 
-printf '\nlocal_change: true\n' >>"$fixture/cfg/controlplane.yaml"
-dry_output="$(run_cipher encrypt --dry-run cfg/controlplane.yaml)"
+printf '\nlocal_change: true\n' >>"$fixture/cfg/controlplane.secret.yaml"
+dry_output="$(run_cipher encrypt --dry-run cfg/controlplane.secret.yaml)"
 assert_contains "$dry_output" "would update ciphertext"
-[[ "$(file_hash "$fixture/cfg/controlplane.enc.yaml")" == "$control_cipher_hash" ]] || \
+[[ "$(file_hash "$fixture/cfg/controlplane.secret.sops.yaml")" == "$control_cipher_hash" ]] || \
   fail "encrypt dry-run changed ciphertext"
 
-cp "$fixture/cfg/worker.yaml" "$test_root/worker.yaml"
-rm "$fixture/cfg/worker.yaml"
+cp "$fixture/cfg/worker.secret.yaml" "$test_root/worker.secret.yaml"
+rm "$fixture/cfg/worker.secret.yaml"
 if run_cipher encrypt >/dev/null 2>&1; then
   fail "encrypt accepted a missing plaintext file"
 fi
-[[ "$(file_hash "$fixture/cfg/controlplane.enc.yaml")" == "$control_cipher_hash" ]] || \
+[[ "$(file_hash "$fixture/cfg/controlplane.secret.sops.yaml")" == "$control_cipher_hash" ]] || \
   fail "encrypt changed an earlier file before preflight failed"
-cp "$test_root/worker.yaml" "$fixture/cfg/worker.yaml"
+cp "$test_root/worker.secret.yaml" "$fixture/cfg/worker.secret.yaml"
 
-run_cipher encrypt cfg/controlplane.yaml >/dev/null
-[[ "$(file_hash "$fixture/cfg/controlplane.enc.yaml")" != "$control_cipher_hash" ]] || \
+run_cipher encrypt cfg/controlplane.secret.yaml >/dev/null
+[[ "$(file_hash "$fixture/cfg/controlplane.secret.sops.yaml")" != "$control_cipher_hash" ]] || \
   fail "changed plaintext did not update ciphertext"
 
-rm "$fixture/cfg/controlplane.yaml" "$fixture/cfg/worker.yaml" "$fixture/secrets/talosconfig"
+rm "$fixture/cfg/controlplane.secret.yaml" "$fixture/cfg/worker.secret.yaml" "$fixture/secrets/talosconfig.secret.yaml"
 dry_output="$(run_cipher decrypt --dry-run)"
 assert_contains "$dry_output" "would create plaintext"
-assert_no_file "$fixture/cfg/controlplane.yaml"
-assert_no_file "$fixture/cfg/worker.yaml"
-assert_no_file "$fixture/secrets/talosconfig"
+assert_no_file "$fixture/cfg/controlplane.secret.yaml"
+assert_no_file "$fixture/cfg/worker.secret.yaml"
+assert_no_file "$fixture/secrets/talosconfig.secret.yaml"
 
 run_cipher decrypt >/dev/null
 for plaintext in \
-  "$fixture/cfg/controlplane.yaml" \
-  "$fixture/cfg/worker.yaml" \
-  "$fixture/secrets/talosconfig"; do
+  "$fixture/cfg/controlplane.secret.yaml" \
+  "$fixture/cfg/worker.secret.yaml" \
+  "$fixture/secrets/talosconfig.secret.yaml"; do
   assert_file "$plaintext"
   [[ "$(file_mode "$plaintext")" == 600 ]] || fail "wrong plaintext mode for $plaintext"
 done
 
-worker_inode="$(file_inode "$fixture/cfg/worker.yaml")"
+worker_inode="$(file_inode "$fixture/cfg/worker.secret.yaml")"
 run_cipher decrypt >/dev/null
-[[ "$(file_inode "$fixture/cfg/worker.yaml")" == "$worker_inode" ]] || \
+[[ "$(file_inode "$fixture/cfg/worker.secret.yaml")" == "$worker_inode" ]] || \
   fail "unchanged plaintext was replaced"
 
-printf '\nlocal_only: true\n' >>"$fixture/cfg/worker.yaml"
-worker_plain_hash="$(file_hash "$fixture/cfg/worker.yaml")"
-decrypt_output="$(run_cipher decrypt cfg/worker.yaml)"
+printf '\nlocal_only: true\n' >>"$fixture/cfg/worker.secret.yaml"
+worker_plain_hash="$(file_hash "$fixture/cfg/worker.secret.yaml")"
+decrypt_output="$(run_cipher decrypt cfg/worker.secret.yaml)"
 assert_contains "$decrypt_output" "kept local plaintext"
-[[ "$(file_hash "$fixture/cfg/worker.yaml")" == "$worker_plain_hash" ]] || \
+[[ "$(file_hash "$fixture/cfg/worker.secret.yaml")" == "$worker_plain_hash" ]] || \
   fail "decrypt overwrote canonical local plaintext"
 
-force_dry_output="$(run_cipher decrypt --force --dry-run cfg/worker.yaml)"
+force_dry_output="$(run_cipher decrypt --force --dry-run cfg/worker.secret.yaml)"
 assert_contains "$force_dry_output" "would replace plaintext"
-[[ "$(file_hash "$fixture/cfg/worker.yaml")" == "$worker_plain_hash" ]] || \
+[[ "$(file_hash "$fixture/cfg/worker.secret.yaml")" == "$worker_plain_hash" ]] || \
   fail "forced decrypt dry-run changed plaintext"
 
-run_cipher decrypt --force cfg/worker.yaml >/dev/null
-if grep -q '^local_only:' "$fixture/cfg/worker.yaml"; then
+run_cipher decrypt --force cfg/worker.secret.yaml >/dev/null
+if grep -q '^local_only:' "$fixture/cfg/worker.secret.yaml"; then
   fail "forced decrypt did not restore ciphertext content"
 fi
-[[ "$(file_mode "$fixture/cfg/worker.yaml")" == 600 ]] || \
+[[ "$(file_mode "$fixture/cfg/worker.secret.yaml")" == 600 ]] || \
   fail "forced decrypt changed plaintext permissions"
 
-cp "$fixture/cfg/worker.enc.yaml" "$test_root/worker.enc.yaml"
-printf 'not: valid: yaml\n' >"$fixture/cfg/worker.enc.yaml"
-rm "$fixture/cfg/controlplane.yaml" "$fixture/cfg/worker.yaml" "$fixture/secrets/talosconfig"
+cp "$fixture/cfg/worker.secret.sops.yaml" "$test_root/worker.secret.sops.yaml"
+printf 'not: valid: yaml\n' >"$fixture/cfg/worker.secret.sops.yaml"
+rm "$fixture/cfg/controlplane.secret.yaml" "$fixture/cfg/worker.secret.yaml" "$fixture/secrets/talosconfig.secret.yaml"
 if run_cipher decrypt >/dev/null 2>&1; then
   fail "decrypt accepted corrupt ciphertext"
 fi
-assert_no_file "$fixture/cfg/controlplane.yaml"
-assert_no_file "$fixture/cfg/worker.yaml"
-assert_no_file "$fixture/secrets/talosconfig"
-mv "$test_root/worker.enc.yaml" "$fixture/cfg/worker.enc.yaml"
+assert_no_file "$fixture/cfg/controlplane.secret.yaml"
+assert_no_file "$fixture/cfg/worker.secret.yaml"
+assert_no_file "$fixture/secrets/talosconfig.secret.yaml"
+mv "$test_root/worker.secret.sops.yaml" "$fixture/cfg/worker.secret.sops.yaml"
 
 echo "ok: cipher state transitions"

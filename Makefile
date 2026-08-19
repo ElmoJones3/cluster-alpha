@@ -1,5 +1,5 @@
 # Node lists come from mise.toml (CONTROL_PLANE_IP, optional space-separated WORKER_IP).
-export TALOSCONFIG ?= ./secrets/talosconfig
+export TALOSCONFIG ?= ./secrets/talosconfig.secret.yaml
 
 .PHONY: help check-env encrypt encrypt-dry-run decrypt decrypt-dry-run test test-cipher reboot-all shutdown-all
 

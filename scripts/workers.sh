@@ -16,6 +16,6 @@ for ip in "${workers[@]}"; do
   talosctl apply-config \
     --insecure \
     --nodes "$ip" \
-    --file "$root/cfg/worker.yaml" \
+    --file "$root/cfg/worker.secret.yaml" \
     --config-patch "@$root/patches/worker-local-pvs.yaml"
 done

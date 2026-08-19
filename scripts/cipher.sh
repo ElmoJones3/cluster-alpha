@@ -25,9 +25,9 @@ launch_dir="$PWD"
 root="$(cd "$(dirname "$0")/.." && pwd -P)"
 
 FILES=(
-  cfg/controlplane.yaml
-  cfg/worker.yaml
-  secrets/talosconfig
+  cfg/controlplane.secret.yaml
+  cfg/worker.secret.yaml
+  secrets/talosconfig.secret.yaml
 )
 
 usage() {
@@ -48,13 +48,11 @@ die() {
   exit 1
 }
 
-enc_path() {
+sops_path() {
   local src="$1"
-  if [[ "$src" == *.yaml ]]; then
-    printf '%s\n' "${src%.yaml}.enc.yaml"
-  else
-    printf '%s\n' "${src}.enc.yaml"
-  fi
+  [[ "$src" == *.secret.yaml ]] || \
+    die "managed plaintext must end in .secret.yaml: $src"
+  printf '%s\n' "${src%.secret.yaml}.secret.sops.yaml"
 }
 
 sops_yaml() {
@@ -123,7 +121,7 @@ validate_targets() {
     fi
     seen_targets+=("$target")
 
-    dst="$(enc_path "$target")"
+    dst="$(sops_path "$target")"
     if [[ "$mode" == encrypt ]]; then
       [[ -e "$target" ]] || die "missing plaintext: $target"
       [[ ! -L "$target" && -f "$target" && -r "$target" ]] || \
@@ -230,7 +228,7 @@ plan_encrypt() {
   local stage
   local match_status
 
-  dst="$(enc_path "$src")"
+  dst="$(sops_path "$src")"
   new_temp_for "$dst"
   stage="$NEW_TEMP"
   sops_yaml --encrypt --output "$stage" "$src"
@@ -271,7 +269,7 @@ plan_decrypt() {
   local dst
   local stage
 
-  dst="$(enc_path "$src")"
+  dst="$(sops_path "$src")"
   new_temp_for "$src"
   stage="$NEW_TEMP"
   sops_yaml --decrypt --output "$stage" "$dst"
