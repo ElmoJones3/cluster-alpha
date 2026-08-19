@@ -1,12 +1,15 @@
 # Node lists come from mise.toml (CONTROL_PLANE_IP, optional space-separated WORKER_IP).
-export TALOSCONFIG ?= ./secrets/talosconfig
+export TALOSCONFIG ?= ./secrets/talosconfig.secret.yaml
 
-.PHONY: help check-env encrypt decrypt reboot-all shutdown-all
+.PHONY: help check-env encrypt encrypt-dry-run decrypt decrypt-dry-run test test-cipher reboot-all shutdown-all
 
 help:
 	@printf '%s\n' \
-	  '  make encrypt         ./scripts/cipher.sh encrypt  (plaintext → *.enc.yaml)' \
-	  '  make decrypt         cipher.sh decrypt (mise x -- if mise is on PATH)' \
+	  '  make encrypt         Update encrypted sidecars from local plaintext' \
+	  '  make encrypt-dry-run Preview encrypted sidecar changes' \
+	  '  make decrypt         Create missing plaintext; keep existing files' \
+	  '  make decrypt-dry-run Preview plaintext creation and conflicts' \
+	  '  make test            Run repository tests' \
 	  '  make reboot-all      Reboot workers, then the control plane' \
 	  '  make shutdown-all    Power off workers, then the control plane' \
 	  '' \
@@ -15,7 +18,18 @@ help:
 	  'Confirm shutdown with YES=1 to skip the prompt.'
 
 encrypt:
-	./scripts/cipher.sh encrypt
+	@if command -v mise >/dev/null; then \
+	  mise x -- ./scripts/cipher.sh encrypt; \
+	else \
+	  ./scripts/cipher.sh encrypt; \
+	fi
+
+encrypt-dry-run:
+	@if command -v mise >/dev/null; then \
+	  mise x -- ./scripts/cipher.sh encrypt --dry-run; \
+	else \
+	  ./scripts/cipher.sh encrypt --dry-run; \
+	fi
 
 # mise.toml holds SOPS_AGE_KEY_FILE. If mise is here, load it. If not, the
 # caller already exported whatever decrypt needs.
@@ -25,6 +39,18 @@ decrypt:
 	else \
 	  ./scripts/cipher.sh decrypt; \
 	fi
+
+decrypt-dry-run:
+	@if command -v mise >/dev/null; then \
+	  mise x -- ./scripts/cipher.sh decrypt --dry-run; \
+	else \
+	  ./scripts/cipher.sh decrypt --dry-run; \
+	fi
+
+test: test-cipher
+
+test-cipher:
+	./tests/cipher_test.sh
 
 check-env:
 	@test -n "$(CONTROL_PLANE_IP)" || { echo "CONTROL_PLANE_IP is unset (load mise env)"; exit 1; }

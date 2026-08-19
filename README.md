@@ -39,19 +39,19 @@ Each worker will expose a directory on Talos `EPHEMERAL` storage for local Persi
 
 | Path | Purpose | Committed |
 | --- | --- | --- |
-| `cfg/controlplane.yaml` | Plaintext control-plane machine config | No |
-| `cfg/controlplane.enc.yaml` | Encrypted control-plane config | Yes |
-| `cfg/worker.yaml` | Plaintext worker machine config | No |
-| `cfg/worker.enc.yaml` | Encrypted worker config | Yes |
-| `secrets/talosconfig` | Plaintext `talosctl` credentials | No |
-| `secrets/talosconfig.enc.yaml` | Encrypted `talosctl` credentials | Yes |
+| `cfg/controlplane.secret.yaml` | Plaintext control-plane machine config | No |
+| `cfg/controlplane.secret.sops.yaml` | Encrypted control-plane config | Yes |
+| `cfg/worker.secret.yaml` | Plaintext worker machine config | No |
+| `cfg/worker.secret.sops.yaml` | Encrypted worker config | Yes |
+| `secrets/talosconfig.secret.yaml` | Plaintext `talosctl` credentials | No |
+| `secrets/talosconfig.secret.sops.yaml` | Encrypted `talosctl` credentials | Yes |
 | `.sops.yaml` | Public age recipient | Yes |
 | `scripts/cipher.sh` | Encryption and decryption workflow | Yes |
 | `scripts/workers.sh` | Applies the worker config and tracked patches to `WORKER_IP` | Yes |
 | `patches/worker-local-pvs.yaml` | Worker label and `EPHEMERAL`-backed local-storage patch | Yes |
 | `k8s/local-path/` | Pinned Local Path Provisioner and smoke test | Yes |
 
-Local environment settings live in `mise.toml`, which is gitignored. `TALOSCONFIG` points to the plaintext `secrets/talosconfig`; `talosctl` reads that file while git sees only `*.enc.yaml`.
+Local environment settings live in `mise.toml`, which is gitignored. `TALOSCONFIG` points to the plaintext `secrets/talosconfig.secret.yaml`; `talosctl` reads that file while git sees only `*.secret.sops.yaml`.
 
 ## Requirements
 
@@ -67,22 +67,28 @@ Local environment settings live in `mise.toml`, which is gitignored. `TALOSCONFI
 Set `TALOSCONFIG` in your shell or pass it to each command:
 
 ```bash
-export TALOSCONFIG=./secrets/talosconfig
-# or pass --talosconfig=./secrets/talosconfig on each command
+export TALOSCONFIG=./secrets/talosconfig.secret.yaml
+# or pass --talosconfig=./secrets/talosconfig.secret.yaml on each command
 ```
 
 `mise.toml` can export `SOPS_AGE_KEY_FILE`, `CONTROL_PLANE_IP`, `TALOSCONFIG`, and the other local values. It stays out of git so each admin machine can use its own paths.
 
 ### Secrets
 
-Plaintext files under `cfg/` and `secrets/` are gitignored except for `*.enc.yaml`. The public age key is in `.sops.yaml`. The private key is a path on the admin machine, supplied through `SOPS_AGE_KEY_FILE`, and never belongs in git.
+Plaintext secrets end in `*.secret.yaml` and are gitignored in every directory. Their committed sops counterparts end in `*.secret.sops.yaml`. The public age key is in `.sops.yaml`. The private key is a path on the admin machine, supplied through `SOPS_AGE_KEY_FILE`, and never belongs in git.
 
 ```bash
-make encrypt    # plaintext to *.enc.yaml; needs only the public recipient
-make decrypt    # *.enc.yaml to plaintext; needs SOPS_AGE_KEY_FILE
+make encrypt          # update *.secret.sops.yaml from local plaintext
+make encrypt-dry-run  # preview ciphertext changes
+make decrypt          # create missing plaintext; keep existing files
+make decrypt-dry-run  # preview creation and conflicts
 ```
 
-Decryption overwrites the plaintext files without making a backup. Encrypt after editing, then commit the sidecars.
+Local plaintext is canonical. Decryption creates a file when it is missing and leaves an existing file alone. If the existing plaintext matches the sidecar, the command reports it as unchanged. If it differs, the command reports the conflict and keeps the local file.
+
+Use `./scripts/cipher.sh decrypt --force [path...]` only when you intend to restore plaintext from committed ciphertext. Add `--dry-run` first to see which files it would replace.
+
+The script stages every result before it changes a managed file. Fresh plaintext files use mode `0600`. Paths passed on the command line must come from the managed list in `scripts/cipher.sh`.
 
 `make decrypt` runs through `mise x --` when `mise` is available, which loads the local environment. Without `mise`, export the key path yourself:
 
@@ -95,7 +101,7 @@ export SOPS_AGE_KEY_FILE=/path/to/age/keys.txt
 make decrypt
 ```
 
-Encryption does not need the private key. A machine with only this clone and no matching age identity cannot decrypt the Talos credentials. Independently issued Talos or Kubernetes credentials are a separate access path.
+Encryption does not need the private key. When the key is available, the script decrypts both versions and skips ciphertext rewrites when the plaintext has not changed. Without the key, sops ciphertext cannot be compared because encryption is randomized, so encrypt writes a new sidecar. A machine with only this clone and no matching age identity cannot decrypt the Talos credentials. Independently issued Talos or Kubernetes credentials are a separate access path.
 
 To add another age identity, add its public key to `.sops.yaml`, then run `sops updatekeys` on the sidecars or `make encrypt` from plaintext. Copying the existing private key to a second machine also works, but do not commit it. Full workflow notes are in `scripts/cipher.sh`.
 
@@ -110,9 +116,9 @@ Workers have not been provisioned because the other boxes are not in the cluster
 | 3. Store node IPs | **done** | `CONTROL_PLANE_IP=10.0.0.239` in `mise.toml`. No `WORKER_IP` yet. |
 | 4. Unmount the ISO | **done** | The machine must boot from the installed NVMe after apply and reboot. |
 | 5. Learn about installation disks | **done** | `talosctl get disks --insecure --nodes $CONTROL_PLANE_IP` returned `nvme0n1`. |
-| 6. Generate cluster configuration | **done** | Created `cfg/controlplane.yaml`, `cfg/worker.yaml`, and `secrets/talosconfig`. |
+| 6. Generate cluster configuration | **done** | Created `cfg/controlplane.secret.yaml`, `cfg/worker.secret.yaml`, and `secrets/talosconfig.secret.yaml`. |
 | 7. Apply configurations | **done** | Control plane applied. Workers not applied. |
-| 8. Set endpoints | **done** | Ran `talosctl --talosconfig=./secrets/talosconfig config endpoints $CONTROL_PLANE_IP`. |
+| 8. Set endpoints | **done** | Ran `talosctl --talosconfig=./secrets/talosconfig.secret.yaml config endpoints $CONTROL_PLANE_IP`. |
 | 9. Bootstrap etcd | **done** | Ran once on the single control plane. |
 | 10. Get Kubernetes access | **pending** | Run `talosctl kubeconfig`. |
 | 11. Check cluster health | **pending** | Run `talosctl health`. |
@@ -127,7 +133,7 @@ talosctl gen config $CLUSTER_NAME https://$CONTROL_PLANE_IP:6443 --install-disk 
 The control-plane configuration was applied with:
 
 ```bash
-talosctl apply-config --insecure --nodes $CONTROL_PLANE_IP --file cfg/controlplane.yaml
+talosctl apply-config --insecure --nodes $CONTROL_PLANE_IP --file cfg/controlplane.secret.yaml
 ```
 
 `--insecure` is only for maintenance mode, before a node has a machine configuration. Applying the configuration installs Talos to disk and reboots the node. Later commands use `talosconfig` because the unauthenticated maintenance API is gone.
@@ -142,7 +148,7 @@ WORKER_IP="10.0.0.x 10.0.0.y"
 etcd was bootstrapped with:
 
 ```bash
-talosctl bootstrap --nodes $CONTROL_PLANE_IP --talosconfig=./secrets/talosconfig
+talosctl bootstrap --nodes $CONTROL_PLANE_IP --talosconfig=./secrets/talosconfig.secret.yaml
 ```
 
 That command runs once per cluster. Do not run it again on `alpha`.
@@ -152,11 +158,11 @@ That command runs once per cluster. Do not run it again on `alpha`.
 The cluster was last shut down from this laptop. Power on the control plane first, then finish steps 10 through 12:
 
 ```bash
-talosctl kubeconfig --nodes $CONTROL_PLANE_IP --talosconfig=./secrets/talosconfig
-# or: talosctl kubeconfig ./secrets/kubeconfig --nodes $CONTROL_PLANE_IP --talosconfig=./secrets/talosconfig
+talosctl kubeconfig --nodes $CONTROL_PLANE_IP --talosconfig=./secrets/talosconfig.secret.yaml
+# or: talosctl kubeconfig ./secrets/kubeconfig --nodes $CONTROL_PLANE_IP --talosconfig=./secrets/talosconfig.secret.yaml
 #      export KUBECONFIG=./secrets/kubeconfig
 
-talosctl --nodes $CONTROL_PLANE_IP --talosconfig=./secrets/talosconfig health
+talosctl --nodes $CONTROL_PLANE_IP --talosconfig=./secrets/talosconfig.secret.yaml health
 kubectl get nodes
 ```
 
@@ -170,7 +176,7 @@ Each worker will use a directory on its existing Talos `EPHEMERAL` filesystem (`
 
 `volumeType: directory` has no `provisioning` block. Fields such as `diskSelector`, `minSize`, `maxSize`, filesystem configuration, and encryption are invalid for this volume type. The directory inherits the capacity of `EPHEMERAL`, so the planned 128 GB per worker is a soft usage budget rather than a partition or quota.
 
-[`scripts/workers.sh`](scripts/workers.sh) applies the generated worker config and the tracked patch together. Run `make decrypt` first on a fresh clone so `cfg/worker.yaml` exists.
+[`scripts/workers.sh`](scripts/workers.sh) applies the generated worker config and the tracked patch together. Run `make decrypt` first on a fresh clone so `cfg/worker.secret.yaml` exists.
 
 - [ ] Boot each G5 from the same Talos ISO and note its maintenance-mode IP.
 - [ ] Check the install disk on every box with `talosctl get disks --insecure --nodes <worker-ip>`.
@@ -279,9 +285,9 @@ These steps apply to a second laptop or workstation, not a Talos node.
 - [ ] Clone the repository. The working tree should contain encrypted sidecars only.
 - [ ] Create a local, gitignored `mise.toml` or export `SOPS_AGE_KEY_FILE`.
 - [ ] Run `make decrypt` and confirm that it produces plaintext without a `SOPS_AGE_KEY_FILE is unset` error.
-- [ ] With the control plane on, run `talosctl --nodes $CONTROL_PLANE_IP --talosconfig=./secrets/talosconfig version`.
+- [ ] With the control plane on, run `talosctl --nodes $CONTROL_PLANE_IP --talosconfig=./secrets/talosconfig.secret.yaml version`.
 - [ ] Run `talosctl --nodes $CONTROL_PLANE_IP get nodename`, or `health` after kubeconfig exists.
-- [ ] Confirm that `git status` does not list `cfg/controlplane.yaml`, `cfg/worker.yaml`, or `secrets/talosconfig`.
+- [ ] Confirm that `git status` does not list `cfg/controlplane.secret.yaml`, `cfg/worker.secret.yaml`, or `secrets/talosconfig.secret.yaml`.
 
 If decryption works but `talosctl` fails, sops has the right key and the problem is cluster access: the node may be off, `CONTROL_PLANE_IP` may be wrong, or `talosconfig` may contain stale endpoints. If decryption fails, the age identity does not match `.sops.yaml`.
 
@@ -333,8 +339,10 @@ kubectl get nodes
 kubectl get pods -A
 
 # --- secrets ---
-make encrypt                    # plaintext to *.enc.yaml
-make decrypt                    # needs SOPS_AGE_KEY_FILE (mise x -- if mise exists)
+make encrypt-dry-run            # preview sidecar changes
+make encrypt                    # update sidecars from canonical plaintext
+make decrypt-dry-run            # preview creates and conflicts
+make decrypt                    # create missing plaintext; keep local files
 
 # --- lifecycle (destructive ones last) ---
 make reboot-all                 # workers first, then control plane
@@ -359,7 +367,7 @@ See the [talosctl CLI reference](https://docs.siderolabs.com/talos/v1.13/referen
 
 **Maintenance mode:** A node that has booted the ISO in memory but has no machine configuration. Its API is unauthenticated, and `apply-config --insecure` claims it. Anyone on the network can do that until a configuration is applied. The ISO does not write to disk before then.
 
-**Machine config:** Declarative YAML applied to a node (`cfg/controlplane.yaml` or `cfg/worker.yaml`). One document defines the OS installation, cluster membership, and Kubernetes role.
+**Machine config:** Declarative YAML applied to a node (`cfg/controlplane.secret.yaml` or `cfg/worker.secret.yaml`). One document defines the OS installation, cluster membership, and Kubernetes role.
 
 **Control plane:** A node running etcd and the Kubernetes control-plane components: the API server, scheduler, and controller manager. Ports 6443 for Kubernetes and 50000 for the Talos API must be reachable. This cluster has one control plane. Talos normally taints control-plane nodes to keep ordinary workloads off them unless `cluster.allowSchedulingOnControlPlanes` is enabled. Check the live taints with `kubectl describe node`.
 
@@ -371,7 +379,7 @@ See the [talosctl CLI reference](https://docs.siderolabs.com/talos/v1.13/referen
 
 **Endpoint and node:** An endpoint is the address `talosctl` contacts, usually a control plane. A node, passed with `-n`, is the machine the request concerns. Endpoints proxy requests to other members, so inspecting a worker does not require changing the endpoint.
 
-**talosconfig:** Client certificates and endpoints for the Talos API, stored here as `./secrets/talosconfig` or normally as `~/.talos/config`. It grants OS and cluster administration through the Talos API, not `kubectl` access. Git holds `secrets/talosconfig.enc.yaml`.
+**talosconfig:** Client certificates and endpoints for the Talos API, stored here as `./secrets/talosconfig.secret.yaml` or normally as `~/.talos/config`. It grants OS and cluster administration through the Talos API, not `kubectl` access. Git holds `secrets/talosconfig.secret.sops.yaml`.
 
 **sops and age:** sops provides key-level YAML encryption and age supplies the recipient identity. YAML keys stay readable while values become `ENC[...]`. `.sops.yaml` contains the age public key; the private key stays on the admin machine at `SOPS_AGE_KEY_FILE`.
 

@@ -1,12 +1,6 @@
 mise.toml
+.tmp/
 
-# cfg/ and secrets/: ignore everything, then allow encrypted sidecars
-# and any files named below.
-cfg/*
-secrets/*
-!cfg/*.enc.yaml
-!secrets/*.enc.yaml
-
-# named exceptions
-# !cfg/example.yaml
-# !secrets/example
+# Plaintext secrets use this suffix in any directory. Their
+# *.secret.sops.yaml counterparts remain trackable.
+*.secret.yaml
